@@ -20,6 +20,7 @@ def parse_arguments(arguments):
         "invert_chirality": bool(arguments.invert_chirality),
         "top_left_pixel": arguments.top_left_pixel,
         "bottom_right_pixel": arguments.bottom_right_pixel,
+        "generate_captions": bool(arguments.generate_captions)
     }
 
     args["image_depth"] = 1 if args["grayscale_images"] else 3
@@ -28,13 +29,13 @@ def parse_arguments(arguments):
     img_dim = (int(img_dim[0]), int(img_dim[1]))
     if args["grid_dimension"] is None:
         scale = int(
-            math.floor(math.sqrt(10000000 / (image_dimension[0] * image_dimension[1])))
+            math.floor(math.sqrt(10000000 / (img_dim[0] * img_dim[1])))
         )
         if scale == 0:
             scale += 1
         args["grid_dimension"] = (
-            scale * image_dimension[0],
-            scale * image_dimension[1],
+            scale * img_dim[0],
+            scale * img_dim[1],
         )
     else:
         grid_dim = args["grid_dimension"].split()
@@ -63,23 +64,28 @@ def parse_arguments(arguments):
     blank_image = np.zeros(
         [img_dim[1], img_dim[0], args["image_depth"]], dtype=np.uint8
     )
-    blank_image.fill(0 if black_blank_image else 255)
+    blank_image.fill(0 if args['black_blank_image'] else 255)
 
-    with open(image_names) as filenames:
+    with open(args['image_names']) as filenames:
         for line in filenames:
             names_all.append(line.strip())
 
-    with open(image_captions, "r") as filenames:
+    with open(args['image_captions'], "r") as filenames:
         lines = csv.reader(filenames, delimiter="|")
         for line in lines:
             captions_all[line[0].strip()] = line[1].strip()
+            args['captions_all'] = captions_all
 
     if args["grid_size"] == None:
-        args["n"] = int(np.ceil(math.sqrt(len(names_all))))
+        n = int(np.ceil(math.sqrt(len(names_all))))
     else:
-        args["n"] = int(grid_size)
+        n = int(grid_size)
 
-    args["image_dimension"] = image_dimension
+    args['names_all'] = names_all
+    args["n"] = n
+    args['blank'] = blank
+    args['blank_image'] = blank_image
+    args["image_dimension"] = img_dim
     return args
 
 
@@ -150,7 +156,7 @@ def crop(image, top_left_pixel, bottom_right_pixel):
 
 
 def find_image(i, j, img_info):
-    path = image_source + get_names(
+    path = img_info['image_source'] + get_names(
         get_grid(i, j, img_info["grid"], img_info["names"]),
         img_info["names"],
         img_info["blank"],
@@ -164,10 +170,10 @@ def find_image(i, j, img_info):
         file = files[file]
         image = (
             cv2.imread(file, cv2.IMREAD_GRAYSCALE)
-            if grayscale_images
+            if img_info['grayscale_images']
             else cv2.imread(file, cv2.IMREAD_COLOR)
         )
-        image_status[i][j] = 1
+        img_info['image_status'][i][j] = 1
     image = cv2.resize(
         image, img_info["image_dimension"], interpolation=cv2.INTER_CUBIC
     )
@@ -179,45 +185,45 @@ def concatenate_images(image_grid):
     return cv2.vconcat([cv2.hconcat(row) for row in image_grid])
 
 
-def generate_caption(
-    n, names, captions_all, grid, image_status, blank, image_destination
-):
+def generate_caption(args, img_info):
     string = "From Left to Right, Top to Bottom\n"
     sep = ", "
+    n = args['n']
     for i in range(n):
         for j in range(n):
-            if image_status[i][j]:
-                string += captions_all[
-                    get_names(get_grid(i, j, grid, names), names, blank)
+            if img_info['image_status'][i][j]:
+                string += args['captions_all'][
+                    get_names(get_grid(i, j, img_info['grid'], img_info['names']), img_info['names'], args['blank'])
                 ] + (sep if j < n - 1 else "")
             else:
                 string += "_" + (sep if j < n - 1 else "")
         string += "\n" if i < n - 1 else ""
-    with open(image_destination + ".txt", "w") as file:
+    with open(args['image_destination'] + ".txt", "w") as file:
         file.write(string)
 
-
 def generate_image_grid_with_caption(args):
-    n = 2 * args["n"] // 2 + 1 if force_odd_size else n  # To make sure n is odd
-    names = names_all[: n * n]
+    # Pre processing
+    n = args["n"]
+    n = 2 * n // 2 + 1 if args['force_odd_size'] else n  # To make sure n is odd
+    names = args['names_all'][: n * n]
     grid, image_status = generate_grid(n, args["grid_type"], args["invert_chirality"])
     args["image_destination"] += str(n) + "by" + str(n)
 
-    image_grid = []
+    # Package args into dic
     img_info = {
         "grid": grid,
         "names": names,
-        "image_source": image_source,
+        "image_source": args['image_source'],
         "image_status": image_status,
-        "blank": blank,
-        "blank_image": blank_image,
-        "image_dimension": image_dimension,
-        "top_left_pixel": top_left_pixel,
-        "bottom_right_pixel": bottom_right_pixel,
-        "image_input_extension": image_input_extension,
-        "grayscale_images": grayscale_images,
+        "blank": args['blank'],
+        "blank_image": args['blank_image'],
+        "image_dimension": args['image_dimension'],
+        "top_left_pixel": args['top_left_pixel'],
+        "bottom_right_pixel": args['bottom_right_pixel'],
+        "grayscale_images": args['grayscale_images'],
     }
 
+    image_grid = []
     for i in range(n):
         row = []
         for j in range(n):
@@ -226,14 +232,16 @@ def generate_image_grid_with_caption(args):
         image_grid.append(row)
 
     output = concatenate_images(image_grid)
-    image_compressed = cv2.resize(output, grid_dimension, interpolation=cv2.INTER_CUBIC)
+    image_compressed = cv2.resize(output, args['grid_dimension'], interpolation=cv2.INTER_CUBIC)
 
+    # Save outputs
     save_format = args["save_png_jpg"]
     if save_format in ["jpeg", "jpg", "both"]:
         cv2.imwrite(args["image_destination"] + "." + "jpg", output)
         cv2.imwrite(
             args["image_destination"] + "_compressed." + "jpg", image_compressed
         )
+
     if save_format in ["png", "both"]:
         cv2.imwrite(args["image_destination"] + "." + "png", output)
         cv2.imwrite(
@@ -241,8 +249,12 @@ def generate_image_grid_with_caption(args):
         )
 
     # Bugged
-    # generate_caption(n, names, captions_all, grid, image_status, blank, image_destination)
+    if args["generate_captions"]:
+        generate_caption(args, img_info)
 
+#TODO
+# remove the need to read a image name file
+# remove image name file
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -257,10 +269,11 @@ if __name__ == "__main__":
     parser.add_argument("--grid-type", default="normal")
     parser.add_argument("--grayscale-images", action="store_true")
     parser.add_argument("--invert-chirality", action="store_true")
-    parser.add_argument("--save-png-jpg", help="png or jpg or both", default="both")
+    parser.add_argument("--save-png-jpg", help="png or jpg or both", default="png")
     parser.add_argument("--black-blank-image", action="store_true")
     parser.add_argument("--top-left-pixel")
     parser.add_argument("--bottom-right-pixel")
+    parser.add_argument("--generate-captions", action="store_false")
 
     arguments = parser.parse_args()
     args = parse_arguments(arguments)
